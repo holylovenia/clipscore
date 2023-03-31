@@ -73,6 +73,8 @@ class CLIPCapDataset(torch.utils.data.Dataset):
     def __getitem__(self, idx):
         c_data = self.data[idx]
         c_data = clip.tokenize(self.prefix + c_data, truncate=True).squeeze()
+        # print(c_data)
+        # quit()
         return {'caption': c_data}
 
     def __len__(self):
@@ -112,7 +114,11 @@ def extract_all_captions(captions, model, device, batch_size=256, num_workers=8)
     with torch.no_grad():
         for b in tqdm.tqdm(data):
             b = b['caption'].to(device)
+            print(b)
+            quit()
             all_text_features.append(model.encode_text(b).cpu().numpy())
+            print(all_text_features[-1])
+            quit()
     all_text_features = np.vstack(all_text_features)
     return all_text_features
 
