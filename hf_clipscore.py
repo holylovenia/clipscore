@@ -21,18 +21,11 @@ import collections
 import os
 import pathlib
 import json
-import generation_eval_utils
+import clipscore.generation_eval_utils
 import pprint
 import transformers
 import warnings
 from packaging import version
-
-
-checkpoint_path = "/home/holy/projects/vqa-obj-hallucination/save/img_txt_relevance/openai__clip-vit-base-patch32"
-
-processor = transformers.CLIPProcessor.from_pretrained(checkpoint_path)
-model = transformers.CLIPModel.from_pretrained(checkpoint_path)
-model.cuda()
 
 
 def parse_args():
@@ -72,15 +65,18 @@ def parse_args():
 
 
 class CLIPCapDataset(torch.utils.data.Dataset):
-    def __init__(self, data, prefix='A photo depicts'):
+    def __init__(self, data, processor, prefix='A photo depicts'):
         self.data = data
         self.prefix = prefix
+        self.processor = processor
         if self.prefix[-1] != ' ':
             self.prefix += ' '
 
     def __getitem__(self, idx):
         c_data = self.data[idx]
-        c_data = processor(text=self.prefix+c_data, padding="max_length", max_length=77, truncation=True, return_tensors="pt")["input_ids"].squeeze()
+        c_data = self.processor(
+            text=self.prefix+c_data, padding="max_length", max_length=77,
+            truncation=True, return_tensors="pt")["input_ids"].squeeze()
         # print(c_data)
         # quit()
         return {'caption': c_data}
@@ -90,10 +86,11 @@ class CLIPCapDataset(torch.utils.data.Dataset):
 
 
 class CLIPImageDataset(torch.utils.data.Dataset):
-    def __init__(self, data):
+    def __init__(self, data, processor):
         self.data = data
         # only 224x224 ViT-B/32 supported for now
         self.preprocess = self._transform_test(224)
+        self.processor = processor
 
     def _transform_test(self, n_px):
         return Compose([
@@ -106,18 +103,28 @@ class CLIPImageDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, idx):
         c_data = self.data[idx]
-        image = Image.open(c_data).convert("RGB")
+        if isinstance(c_data, str):
+            image = Image.open(c_data)
+        elif isinstance(c_data, Image.Image):
+            image = c_data
+        else:
+            image = c_data
+            image = image.convert("RGB")
         # image = self.preprocess(image)
-        image = processor(images=image, return_tensors="pt")["pixel_values"].squeeze()
+        # print(image)
+        # print(self.processor(images=[image], padding="max_length", max_length=77,
+        #     truncation=True, return_tensors="pt"))
+        # quit()
+        image = self.processor(images=image, return_tensors="pt")["pixel_values"].squeeze()
         return {'image':image}
 
     def __len__(self):
         return len(self.data)
 
 
-def extract_all_captions(captions, model, device, batch_size=256, num_workers=8):
+def extract_all_captions(captions, model, processor, device, batch_size=256, num_workers=2):
     data = torch.utils.data.DataLoader(
-        CLIPCapDataset(captions),
+        CLIPCapDataset(captions, processor=processor),
         batch_size=batch_size, num_workers=num_workers, shuffle=False)
     all_text_features = []
     with torch.no_grad():
@@ -132,9 +139,9 @@ def extract_all_captions(captions, model, device, batch_size=256, num_workers=8)
     return all_text_features
 
 
-def extract_all_images(images, model, device, batch_size=64, num_workers=8):
+def extract_all_images(images, model, processor, device, batch_size=64, num_workers=2):
     data = torch.utils.data.DataLoader(
-        CLIPImageDataset(images),
+        CLIPImageDataset(images, processor=processor),
         batch_size=batch_size, num_workers=num_workers, shuffle=False)
     all_image_features = []
     with torch.no_grad():
@@ -147,7 +154,7 @@ def extract_all_images(images, model, device, batch_size=64, num_workers=8):
     return all_image_features
 
 
-def get_clip_score(model, images, candidates, device, w=2.5):
+def get_clip_score(model, processor, images, candidates, device, w=2.5):
     '''
     get standard image-text clipscore.
     images can either be:
@@ -156,9 +163,9 @@ def get_clip_score(model, images, candidates, device, w=2.5):
     '''
     if isinstance(images, list):
         # need to extract image features
-        images = extract_all_images(images, model, device)
+        images = extract_all_images(images, model, processor, device)
 
-    candidates = extract_all_captions(candidates, model, device)
+    candidates = extract_all_captions(candidates, model, processor, device)
 
     #as of numpy 1.21, normalize doesn't work properly for float16
     if version.parse(np.__version__) < version.parse('1.21'):
@@ -175,12 +182,12 @@ def get_clip_score(model, images, candidates, device, w=2.5):
     return np.mean(per), per, candidates
 
 
-def get_refonlyclipscore(model, references, candidates, device):
+def get_refonlyclipscore(model, processor, references, candidates, device):
     '''
     The text only side for refclipscore
     '''
     if isinstance(candidates, list):
-        candidates = extract_all_captions(candidates, model, device)
+        candidates = extract_all_captions(candidates, model, processor, device)
 
     flattened_refs = []
     flattened_refs_idxs = []
@@ -188,7 +195,7 @@ def get_refonlyclipscore(model, references, candidates, device):
         flattened_refs.extend(refs)
         flattened_refs_idxs.extend([idx for _ in refs])
 
-    flattened_refs = extract_all_captions(flattened_refs, model, device)
+    flattened_refs = extract_all_captions(flattened_refs, model, processor, device)
 
     if version.parse(np.__version__) < version.parse('1.21'):
         candidates = sklearn.preprocessing.normalize(candidates, axis=1)
@@ -244,17 +251,23 @@ def main():
     # model, transform = clip.load("ViT-B/32", device=device, jit=False)
     # model.eval()
 
+    checkpoint_path = "/home/holy/projects/vqa-obj-hallucination/save/img_txt_relevance/openai__clip-vit-base-patch32"
+
+    processor = transformers.CLIPProcessor.from_pretrained(checkpoint_path)
+    model = transformers.CLIPModel.from_pretrained(checkpoint_path)
+    model.cuda()
+
     image_feats = extract_all_images(
-        image_paths, model, device, batch_size=64, num_workers=8)
+        image_paths, model, processor, device, batch_size=64, num_workers=2)
 
     # get image-text clipscore
     _, per_instance_image_text, candidate_feats = get_clip_score(
-        model, image_feats, candidates, device)
+        model, processor, image_feats, candidates, device)
 
     if args.references_json:
         # get text-text clipscore
         _, per_instance_text_text = get_refonlyclipscore(
-            model, references, candidate_feats, device)
+            model, processor, references, candidate_feats, device)
         # F-score
         refclipscores = 2 * per_instance_image_text * per_instance_text_text / (per_instance_image_text + per_instance_text_text)
         scores = {image_id: {'CLIPScore': float(clipscore), 'RefCLIPScore': float(refclipscore)}
