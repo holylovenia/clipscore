@@ -128,7 +128,7 @@ def extract_all_captions(captions, model, processor, device, batch_size=256, num
         batch_size=batch_size, num_workers=num_workers, shuffle=False)
     all_text_features = []
     with torch.no_grad():
-        for b in tqdm.tqdm(data):
+        for b in data:
             b = b['caption'].to(device)
             # print(b)
             # quit()
@@ -145,7 +145,7 @@ def extract_all_images(images, model, processor, device, batch_size=64, num_work
         batch_size=batch_size, num_workers=num_workers, shuffle=False)
     all_image_features = []
     with torch.no_grad():
-        for b in tqdm.tqdm(data):
+        for b in data:
             if device == 'cuda':
                 b = b['image'].to(device)
             b = b.to(torch.float32)
@@ -217,7 +217,7 @@ def get_refonlyclipscore(model, processor, references, candidates, device):
     cand_idx2refs = {k: np.vstack(v) for k, v in cand_idx2refs.items()}
 
     per = []
-    for c_idx, cand in tqdm.tqdm(enumerate(candidates)):
+    for c_idx, cand in enumerate(candidates):
         cur_refs = cand_idx2refs[c_idx]
         all_sims = cand.dot(cur_refs.transpose())
         per.append(np.max(all_sims))
